@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	secure        = flag.Bool("secure", true, "whether to use transport layer & end-to-end encryption")
 	sampleRate    = flag.Int("sample-rate", 5000, "audio sample rate (higher -> more throughput)")
 	laddrStr      = flag.String("l-addr", "", "listen-address of the client")
 	svrAddrStr    = flag.String("s-addr", "", "address of the server")
@@ -43,7 +44,7 @@ func main() {
 		laddr, err = net.ResolveUDPAddr("udp", *laddrStr)
 		chkErr("laddr resolve fail: ", err)
 	}
-	client, err := ipcall.NewClient(svrAddr, laddr, *sampleRate)
+	client, err := ipcall.NewClient(svrAddr, laddr, *sampleRate, *secure)
 	chkErr("client init fail: ", err)
 	// prompt for call start
 	fmt.Printf("Press any key to begin call with \"%s\"\n", *clientAddrStr)

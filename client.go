@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/navaz-alani/concord/client"
+	"github.com/navaz-alani/concord/core/crypto"
 	"github.com/navaz-alani/concord/core/throttle"
 	"github.com/navaz-alani/concord/packet"
 	"github.com/navaz-alani/concord/server"
@@ -33,22 +34,35 @@ type Client struct {
 	pc         packet.PacketCreator
 	sampleRate int
 	statsMu    sync.RWMutex
+	secure     bool
+	cr         *crypto.Crypto
 }
 
-func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int) (*Client, error) {
+func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int, secure bool) (*Client, error) {
+	pc := &packet.JSONPktCreator{}
 	if concordClient, err := client.NewUDPClient(svrAddr, listenAddr, pktTotalMaxSize,
 		&packet.JSONPktCreator{}, throttle.Rate100K); err != nil {
 		return nil, fmt.Errorf("concord client init err: %s", err.Error())
 	} else {
+		var cr *crypto.Crypto
+		if secure {
+			cr, err = crypto.ConfigureClient(concordClient, svrAddr.String(), pc.NewPkt("", svrAddr.String()))
+			if err != nil {
+				return nil, fmt.Errorf("server kex err: %s", err.Error())
+			}
+		}
 		pc := &packet.JSONPktCreator{}
-		return &Client{
+		client := &Client{
 			callMu:     sync.Mutex{},
 			svrAddr:    svrAddr.String(),
 			client:     concordClient,
 			pc:         pc,
 			sampleRate: sampleRate,
 			statsMu:    sync.RWMutex{},
-		}, nil
+			secure:     secure,
+			cr:         cr,
+		}
+		return client, nil
 	}
 }
 
@@ -59,6 +73,27 @@ func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int) (*Client, error
 func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	c.callMu.Lock() // obtain lock for placing a call
 	defer c.callMu.Unlock()
+
+	if c.secure {
+		// perform key exchange with client (retry if not successful)
+		fmt.Printf("Beginning handshake with %s\n", addr)
+		var err error
+		retries := 5
+		for i := 0; i < retries; i++ {
+			if err = c.cr.ClientKEx(c.client, addr, c.pc.NewPkt("", c.svrAddr)); err != nil {
+				// sleep for 1/4 second and retry
+				time.Sleep(250 * time.Millisecond)
+				continue
+			}
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("%s kex fail: %s\n", addr, err.Error())
+		} else {
+			fmt.Printf("Success. Line with %s is now end-to-end encrypted.\n", addr)
+		}
+	}
+
 	a := NewAudioIO(c.sampleRate)
 	recordingDone := make(chan struct{})
 	// begin recording and relaying chunks
@@ -102,12 +137,15 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 				relayedFrom = pkt.Meta().Get(server.KeyRelayFrom)
 				if relayedFrom != addr {
 					continue
+				} else {
+					c.cr.DecryptE2E(relayedFrom, pkt)
 				}
 				// otherwise, process data into audio chunk and send for playing
 				read += uint64(len(pkt.Data()))
 				deserializeBuff.Reset()
 				deserializeBuff.ReadFrom(bytes.NewReader(pkt.Data()))
-				binary.Read(decompress(deserializeBuff), binary.BigEndian, relayedChunk)
+				deserializeBuff = decompress(deserializeBuff)
+				binary.Read(deserializeBuff, binary.BigEndian, relayedChunk)
 				playBuffStream <- relayedChunk
 				relayedChunk = a.BuffPool.Get().([]int32)
 			}
@@ -166,7 +204,9 @@ func (c *Client) relayChunks(addr string, audioDataStream <-chan []int32, a *Aud
 		a.BuffPool.Put(chunk) // return chunk
 		serializeBuff = compress(serializeBuff)
 		written += uint64(serializeBuff.Len())
-		c.client.Send(c.configureRelayPkt(addr, serializeBuff.Bytes()), nil)
+		pkt := c.configureRelayPkt(addr, serializeBuff.Bytes())
+		c.cr.EncryptE2E(addr, pkt) // end-to-end encrypt packet
+		c.client.Send(pkt, nil)
 		serializeBuff.Reset()
 	}
 	progressDone <- struct{}{}
