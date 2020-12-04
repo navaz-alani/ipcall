@@ -8,18 +8,17 @@ import (
 )
 
 const (
-	// sampleRate is proportional to quality of audio
-	sampleRate   = 5000 // -> 20kbps (reduced to ~ 16kbps with compression)
 	buffSize     = 1024
 	buffPoolSize = 10_000
 )
 
 type AudioIO struct {
-	mu       sync.RWMutex
-	BuffPool *sync.Pool
+	mu         sync.RWMutex
+	BuffPool   *sync.Pool
+	sampleRate int
 }
 
-func NewAudioIO() *AudioIO {
+func NewAudioIO(sampleRate int) *AudioIO {
 	buffPool := &sync.Pool{
 		New: func() interface{} {
 			return make([]int32, buffSize)
@@ -30,8 +29,9 @@ func NewAudioIO() *AudioIO {
 		buffPool.Put(buffPool.New())
 	}
 	a := &AudioIO{
-		mu:       sync.RWMutex{},
-		BuffPool: buffPool,
+		mu:         sync.RWMutex{},
+		BuffPool:   buffPool,
+		sampleRate: sampleRate,
 	}
 	return a
 }
@@ -45,7 +45,7 @@ func (a *AudioIO) Play(buffStream <-chan []int32) error {
 	defer portaudio.Terminate()
 	// instantiate audio stream
 	paStreamBuff := a.BuffPool.Get().([]int32)
-	stream, err := portaudio.OpenDefaultStream(0, 1, sampleRate, buffSize, &paStreamBuff)
+	stream, err := portaudio.OpenDefaultStream(0, 1, float64(a.sampleRate), buffSize, &paStreamBuff)
 	if err != nil {
 		return fmt.Errorf("stream init fail: %s", err.Error())
 	}
@@ -71,7 +71,7 @@ func (a *AudioIO) Record(done chan struct{}) (<-chan []int32, error) {
 	recBuff := a.BuffPool.Get().([]int32)
 	// initialize portaudio and create audio stream
 	portaudio.Initialize()
-	stream, err := portaudio.OpenDefaultStream(1, 0, sampleRate, buffSize, &recBuff)
+	stream, err := portaudio.OpenDefaultStream(1, 0, float64(a.sampleRate), buffSize, &recBuff)
 	if err != nil {
 		return nil, fmt.Errorf("stream init fail: %s", err.Error())
 	}

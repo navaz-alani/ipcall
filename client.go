@@ -27,25 +27,27 @@ var (
 )
 
 type Client struct {
-	callMu  sync.Mutex
-	svrAddr string
-	client  client.Client
-	pc      packet.PacketCreator
-	statsMu sync.RWMutex
+	callMu     sync.Mutex
+	svrAddr    string
+	client     client.Client
+	pc         packet.PacketCreator
+	sampleRate int
+	statsMu    sync.RWMutex
 }
 
-func NewClient(svrAddr, listenAddr *net.UDPAddr) (*Client, error) {
+func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int) (*Client, error) {
 	if concordClient, err := client.NewUDPClient(svrAddr, listenAddr, pktTotalMaxSize,
 		&packet.JSONPktCreator{}, throttle.Rate100K); err != nil {
 		return nil, fmt.Errorf("concord client init err: %s", err.Error())
 	} else {
 		pc := &packet.JSONPktCreator{}
 		return &Client{
-			callMu:  sync.Mutex{},
-			svrAddr: svrAddr.String(),
-			client:  concordClient,
-			pc:      pc,
-			statsMu: sync.RWMutex{},
+			callMu:     sync.Mutex{},
+			svrAddr:    svrAddr.String(),
+			client:     concordClient,
+			pc:         pc,
+			sampleRate: sampleRate,
+			statsMu:    sync.RWMutex{},
 		}, nil
 	}
 }
@@ -57,7 +59,7 @@ func NewClient(svrAddr, listenAddr *net.UDPAddr) (*Client, error) {
 func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	c.callMu.Lock() // obtain lock for placing a call
 	defer c.callMu.Unlock()
-	a := NewAudioIO()
+	a := NewAudioIO(c.sampleRate)
 	recordingDone := make(chan struct{})
 	// begin recording and relaying chunks
 	recordStream, err := a.Record(recordingDone)
