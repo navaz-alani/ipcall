@@ -9,7 +9,7 @@ import (
 
 const (
 	// sampleRate is proportional to quality of audio
-	sampleRate   = 44000
+	sampleRate   = 8_000
 	buffSize     = 1024
 	buffPoolSize = 10_000
 )
@@ -25,7 +25,7 @@ func NewAudioIO() *AudioIO {
 			return make([]int32, buffSize)
 		},
 	}
-	// warn up buffer pools
+	// warn up buffer pool
 	for i := 0; i < buffPoolSize; i++ {
 		buffPool.Put(buffPool.New())
 	}

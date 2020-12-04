@@ -1,4 +1,4 @@
-module github.com/navaz-alani/voip
+module github.com/navaz-alani/ipcall
 
 go 1.14
 

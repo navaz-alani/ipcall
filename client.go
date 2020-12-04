@@ -45,12 +45,11 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	defer c.callMu.Unlock()
 	a := NewAudioIO()
 	killStream := make(chan struct{})
-	wg := &sync.WaitGroup{}
 	// begin recording and relaying chunks
 	recordStream, err := a.Record(killStream)
 	chkErr("record err: ", err)
 	audioDataStream := make(chan []int32)
-	go c.relayChunks(wg, addr, audioDataStream, a)
+	go c.relayChunks(addr, audioDataStream, a)
 
 	// play incoming
 	playBuffStream := make(chan []int32)
@@ -64,39 +63,33 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 		}
 	}()
 	for {
-		// update the playBuff
 		select {
 		case <-done:
 			goto EXIT
 		case pkt := <-c.client.Misc():
 			{
-        fmt.Println("got chunk")
 				// ignore if not a relayed message from `addr`
 				relayedFrom = pkt.Meta().Get(server.KeyRelayFrom)
 				if relayedFrom != addr {
-					fmt.Printf("ignoring pkt from: %s\n", relayedFrom)
 					continue
 				}
 				// otherwise, process data into audio chunk and send for playing
 				chunk, err := base64.StdEncoding.DecodeString(string(pkt.Data()))
 				if err != nil {
-					fmt.Printf("decode err: %s\n", err.Error())
 					continue
 				}
 				if err := binary.Read(bytes.NewReader(chunk), binary.BigEndian, relayedChunk); err != nil {
-					fmt.Printf("binary read err: %s\n", err.Error())
 					continue
 				}
-				fmt.Printf("got chunk\n")
 				playBuffStream <- relayedChunk
 				relayedChunk = a.BuffPool.Get().([]int32)
 			}
 		}
 	}
 EXIT:
+	close(playBuffStream)
 	close(audioDataStream)
-  killStream <- struct{}{}
-	wg.Wait()
+	killStream <- struct{}{}
 	return nil
 }
 
@@ -111,9 +104,7 @@ func (c *Client) configureRelayPkt(addr string, data string) packet.Packet {
 	return pkt
 }
 
-func (c *Client) relayChunks(wg *sync.WaitGroup, addr string, audioDataStream <-chan []int32, a *AudioIO) {
-	defer wg.Done()
-
+func (c *Client) relayChunks(addr string, audioDataStream <-chan []int32, a *AudioIO) {
 	var chunk []int32
 	var encoded string
 	encodeBuff := new(bytes.Buffer)
@@ -123,10 +114,7 @@ func (c *Client) relayChunks(wg *sync.WaitGroup, addr string, audioDataStream <-
 		binary.Write(encodeBuff, binary.BigEndian, chunk)
 		a.BuffPool.Put(chunk) // return chunk
 		encoded = base64.StdEncoding.EncodeToString(encodeBuff.Bytes())
-		if err := c.client.Send(c.configureRelayPkt(addr, encoded), nil); err != nil {
-			fmt.Printf("send err: %s\n", err.Error())
-		}
-		fmt.Printf("%v relayed chunk\n", a)
+		c.client.Send(c.configureRelayPkt(addr, encoded), nil)
 		encodeBuff.Reset()
 	}
 }
