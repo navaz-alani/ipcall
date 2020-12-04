@@ -8,19 +8,32 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
+	"syscall"
+
+	"github.com/navaz-alani/ipcall"
 )
 
 var (
-	laddrStr      = flag.String("listen-addr", "", "listen-address of the client")
-	svrAddrStr    = flag.String("svr-addr", "", "address of the server")
-	clientAddrStr = flag.String("client-addr", "", "address of the client")
+	laddrStr      = flag.String("l-addr", "", "listen-address of the client")
+	svrAddrStr    = flag.String("s-addr", "", "address of the server")
+	clientAddrStr = flag.String("c-addr", "", "address of the client")
 )
 
-func main() {
+func handleFlags() {
 	flag.Parse()
 	if *laddrStr == "" || *svrAddrStr == "" || *clientAddrStr == "" {
-		log.Fatalln("usage: voip -listen-addr=<laddr> -svr-addr=<svrAddr> -client-addr=<clienrAddr>")
+		fmt.Printf(
+			`usage: %s -l-addr=<listen-address> -s-addr=<server-address> -c-addr=<client-address>`,
+			os.Args[0],
+		)
+		fmt.Printf("\n")
+		os.Exit(1)
 	}
+}
+
+func main() {
+	handleFlags()
 	var laddr, svrAddr *net.UDPAddr
 	var err error
 	{
@@ -29,20 +42,28 @@ func main() {
 		laddr, err = net.ResolveUDPAddr("udp", *laddrStr)
 		chkErr("laddr resolve fail: ", err)
 	}
-	client, err := NewClient(svrAddr, laddr)
+	client, err := ipcall.NewClient(svrAddr, laddr)
 	chkErr("client init fail: ", err)
 	// prompt for call start
 	fmt.Printf("Press any key to begin call with \"%s\"\n", *clientAddrStr)
 	bufio.NewReader(os.Stdin).ReadRune()
 	// execute call
 	callDone := make(chan struct{})
-	go client.OpenAudioChan(callDone, *clientAddrStr)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		chkErr("audio channel error: ", client.OpenAudioChan(callDone, *clientAddrStr))
+	}()
 	fmt.Printf("Call started. Press Ctrl+C to end.\n")
 	// handle closure
 	killChan := make(chan os.Signal)
-	signal.Notify(killChan, os.Interrupt, os.Kill)
+	signal.Notify(killChan, os.Interrupt, os.Kill, syscall.SIGTERM)
 	<-killChan
+	fmt.Printf("Ending call...\n")
 	callDone <- struct{}{}
+	wg.Wait()
+	fmt.Printf("Call ended.\n")
 }
 
 func chkErr(prefix string, err error) {

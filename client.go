@@ -1,12 +1,13 @@
-package main
+package ipcall
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/navaz-alani/concord/client"
 	"github.com/navaz-alani/concord/core/throttle"
@@ -14,15 +15,27 @@ import (
 	"github.com/navaz-alani/concord/server"
 )
 
+var (
+	// maximum size of packet data (each sample is int32 (4 bytes) and they are
+	// recorded in buffSize chunks, so the recorded chunk (packet data to be sent)
+	// is max size 4*buffSize.
+	pktMaxSize = 4 * buffSize
+	// maximum size of packet metadata
+	pktMetaMaxSize = 2048
+	// maximum size of packet == read buff size
+	pktTotalMaxSize = pktMaxSize + pktMetaMaxSize
+)
+
 type Client struct {
 	callMu  sync.Mutex
 	svrAddr string
 	client  client.Client
 	pc      packet.PacketCreator
+	statsMu sync.RWMutex
 }
 
 func NewClient(svrAddr, listenAddr *net.UDPAddr) (*Client, error) {
-	if concordClient, err := client.NewUDPClient(svrAddr, listenAddr, 10000,
+	if concordClient, err := client.NewUDPClient(svrAddr, listenAddr, pktTotalMaxSize,
 		&packet.JSONPktCreator{}, throttle.Rate100K); err != nil {
 		return nil, fmt.Errorf("concord client init err: %s", err.Error())
 	} else {
@@ -32,6 +45,7 @@ func NewClient(svrAddr, listenAddr *net.UDPAddr) (*Client, error) {
 			svrAddr: svrAddr.String(),
 			client:  concordClient,
 			pc:      pc,
+			statsMu: sync.RWMutex{},
 		}, nil
 	}
 }
@@ -44,10 +58,12 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	c.callMu.Lock() // obtain lock for placing a call
 	defer c.callMu.Unlock()
 	a := NewAudioIO()
-	killStream := make(chan struct{})
+	recordingDone := make(chan struct{})
 	// begin recording and relaying chunks
-	recordStream, err := a.Record(killStream)
-	chkErr("record err: ", err)
+	recordStream, err := a.Record(recordingDone)
+	if err != nil {
+		return fmt.Errorf("record err: %s", err.Error())
+	}
 	audioDataStream := make(chan []int32)
 	go c.relayChunks(addr, audioDataStream, a)
 
@@ -56,12 +72,24 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	go a.Play(playBuffStream)
 	var relayedFrom string
 	relayedChunk := a.BuffPool.Get().([]int32)
-	go func() {
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() { // manages audioDataStream, ends when recordStream closes
+		defer wg.Done()
 		var chunk []int32
 		for chunk = range recordStream {
 			audioDataStream <- chunk
 		}
+		close(audioDataStream)
 	}()
+	// keep track of the number of bytes read
+	var read uint64
+	progressDone := make(chan struct{})
+	wg.Add(1)
+	go showProgress(&wg, "read", progressDone, &read)
+	// process incoming packets
+	deserializeBuff := new(bytes.Buffer)
 	for {
 		select {
 		case <-done:
@@ -74,13 +102,10 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 					continue
 				}
 				// otherwise, process data into audio chunk and send for playing
-				chunk, err := base64.StdEncoding.DecodeString(string(pkt.Data()))
-				if err != nil {
-					continue
-				}
-				if err := binary.Read(bytes.NewReader(chunk), binary.BigEndian, relayedChunk); err != nil {
-					continue
-				}
+				read += uint64(len(pkt.Data()))
+				deserializeBuff.Reset()
+				deserializeBuff.ReadFrom(bytes.NewReader(pkt.Data()))
+				binary.Read(decompress(deserializeBuff), binary.BigEndian, relayedChunk)
 				playBuffStream <- relayedChunk
 				relayedChunk = a.BuffPool.Get().([]int32)
 			}
@@ -88,33 +113,60 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	}
 EXIT:
 	close(playBuffStream)
-	close(audioDataStream)
-	killStream <- struct{}{}
+	recordingDone <- struct{}{}
+	progressDone <- struct{}{}
+	wg.Wait()
+	//c.client.Cleanup()
 	return nil
 }
 
-func (c *Client) configureRelayPkt(addr string, data string) packet.Packet {
+func (c *Client) configureRelayPkt(addr string, data []byte) packet.Packet {
 	pkt := c.pc.NewPkt("", c.svrAddr)
 	writer := pkt.Writer()
 	writer.Meta().Add(packet.KeyTarget, server.TargetRelay)
 	writer.Meta().Add(server.KeyRelayTo, addr) // set server target to "relay"
 	writer.Clear()
-	writer.Write([]byte(data))
+	writer.Write(data)
 	writer.Close()
 	return pkt
 }
 
-func (c *Client) relayChunks(addr string, audioDataStream <-chan []int32, a *AudioIO) {
-	var chunk []int32
-	var encoded string
-	encodeBuff := new(bytes.Buffer)
-
-	for chunk = range audioDataStream {
-		// send chunk as message
-		binary.Write(encodeBuff, binary.BigEndian, chunk)
-		a.BuffPool.Put(chunk) // return chunk
-		encoded = base64.StdEncoding.EncodeToString(encodeBuff.Bytes())
-		c.client.Send(c.configureRelayPkt(addr, encoded), nil)
-		encodeBuff.Reset()
+func showProgress(wg *sync.WaitGroup, verb string, done chan struct{}, n *uint64) {
+	defer wg.Done()
+	start := time.Now()
+	for {
+		select {
+		case <-done:
+			fmt.Printf("%s rate: %f bytes/second\n", verb, float64(*n)/time.Since(start).Seconds())
+			return
+		case <-time.After(5 * time.Second):
+			log.Printf("(%v) %s: %d bytes\n", n, verb, *n)
+		}
 	}
+}
+
+// relayChunks comsumes chunks from the audioDataStream and relays them to the
+// given address through the underlying UDP connection. It winds down work when
+// the audioDataStream is closed.
+func (c *Client) relayChunks(addr string, audioDataStream <-chan []int32, a *AudioIO) {
+	// keep track of written bytes
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	var written uint64
+	progressDone := make(chan struct{})
+	go showProgress(&wg, "written", progressDone, &written)
+	// write recorded chunks as packets and relay
+	var chunk []int32
+	serializeBuff := new(bytes.Buffer)
+	for chunk = range audioDataStream {
+		// write the binary representation of the recorded chunk into serializeBuff
+		binary.Write(serializeBuff, binary.BigEndian, chunk)
+		a.BuffPool.Put(chunk) // return chunk
+		serializeBuff = compress(serializeBuff)
+		written += uint64(serializeBuff.Len())
+		c.client.Send(c.configureRelayPkt(addr, serializeBuff.Bytes()), nil)
+		serializeBuff.Reset()
+	}
+	progressDone <- struct{}{}
+	wg.Wait()
 }

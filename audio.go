@@ -1,4 +1,4 @@
-package main
+package ipcall
 
 import (
 	"fmt"
@@ -9,7 +9,7 @@ import (
 
 const (
 	// sampleRate is proportional to quality of audio
-	sampleRate   = 8_000
+	sampleRate   = 5000 // -> 20kbps (reduced to ~ 16kbps with compression)
 	buffSize     = 1024
 	buffPoolSize = 10_000
 )
