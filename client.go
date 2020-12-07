@@ -2,7 +2,7 @@ package ipcall
 
 import (
 	"bytes"
-	"encoding/binary"
+	//"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -36,6 +36,7 @@ type Client struct {
 	statsMu    sync.RWMutex
 	secure     bool
 	cr         *crypto.Crypto
+	opus       *OpusCompressor
 }
 
 func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int, secure bool) (*Client, error) {
@@ -51,6 +52,10 @@ func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int, secure bool) (*
 				return nil, fmt.Errorf("server kex err: %s", err.Error())
 			}
 		}
+		opus, err := NewOpusCompressor(sampleRate, 1)
+		if err != nil {
+			return nil, fmt.Errorf("opus compressor init err: %s", err.Error())
+		}
 		pc := &packet.JSONPktCreator{}
 		client := &Client{
 			callMu:     sync.Mutex{},
@@ -61,6 +66,7 @@ func NewClient(svrAddr, listenAddr *net.UDPAddr, sampleRate int, secure bool) (*
 			statsMu:    sync.RWMutex{},
 			secure:     secure,
 			cr:         cr,
+			opus:       opus,
 		}
 		return client, nil
 	}
@@ -107,8 +113,6 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	// play incoming
 	playBuffStream := make(chan []int32)
 	go a.Play(playBuffStream)
-	var relayedFrom string
-	relayedChunk := a.BuffPool.Get().([]int32)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -126,6 +130,8 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 	wg.Add(1)
 	go showProgress(&wg, "read", progressDone, &read)
 	// process incoming packets
+	var relayedFrom string
+	relayedChunk := a.BuffPool.Get().([]int32)
 	deserializeBuff := new(bytes.Buffer)
 	for {
 		select {
@@ -137,17 +143,16 @@ func (c *Client) OpenAudioChan(done <-chan struct{}, addr string) error {
 				relayedFrom = pkt.Meta().Get(server.KeyRelayFrom)
 				if relayedFrom != addr {
 					continue
-				} else {
+				} else if c.secure {
 					c.cr.DecryptE2E(relayedFrom, pkt)
 				}
 				// otherwise, process data into audio chunk and send for playing
 				read += uint64(len(pkt.Data()))
-				deserializeBuff.Reset()
 				deserializeBuff.ReadFrom(bytes.NewReader(pkt.Data()))
-				deserializeBuff = decompress(deserializeBuff)
-				binary.Read(deserializeBuff, binary.BigEndian, relayedChunk)
+				c.opus.decompress(pkt.Data(), &relayedChunk) // opus decompress
 				playBuffStream <- relayedChunk
 				relayedChunk = a.BuffPool.Get().([]int32)
+				deserializeBuff.Reset()
 			}
 		}
 	}
@@ -197,17 +202,18 @@ func (c *Client) relayChunks(addr string, audioDataStream <-chan []int32, a *Aud
 	go showProgress(&wg, "written", progressDone, &written)
 	// write recorded chunks as packets and relay
 	var chunk []int32
-	serializeBuff := new(bytes.Buffer)
+	serializeBuff := make([]byte, pktMaxSize)
 	for chunk = range audioDataStream {
-		// write the binary representation of the recorded chunk into serializeBuff
-		binary.Write(serializeBuff, binary.BigEndian, chunk)
+		c.opus.compress(chunk, serializeBuff)
 		a.BuffPool.Put(chunk) // return chunk
-		serializeBuff = compress(serializeBuff)
-		written += uint64(serializeBuff.Len())
-		pkt := c.configureRelayPkt(addr, serializeBuff.Bytes())
-		c.cr.EncryptE2E(addr, pkt) // end-to-end encrypt packet
+		written += uint64(len(serializeBuff))
+		pkt := c.configureRelayPkt(addr, serializeBuff)
+		if c.secure {
+			c.cr.EncryptE2E(addr, pkt) // end-to-end encrypt packet
+		}
 		c.client.Send(pkt, nil)
-		serializeBuff.Reset()
+		//serializeBuff.Reset()
+		serializeBuff = serializeBuff[:]
 	}
 	progressDone <- struct{}{}
 	wg.Wait()

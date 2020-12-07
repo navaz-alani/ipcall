@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	buffSize     = 1024
+	buffSize     = 480 // to get frame size of 60ms (at 8kHz sampling rate)
 	buffPoolSize = 10_000
 )
 

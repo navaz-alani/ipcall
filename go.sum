@@ -2,3 +2,5 @@ github.com/gordonklaus/portaudio v0.0.0-20200911161147-bb74aa485641 h1:B7ADnac3Y
 github.com/gordonklaus/portaudio v0.0.0-20200911161147-bb74aa485641/go.mod h1:HfYnZi/ARQKG0dwH5HNDmPCHdLiFiBf+SI7DbhW7et4=
 github.com/navaz-alani/concord v0.0.0-20201203050336-974d78aae729 h1:ci2y5g1JmRBEy8BBS1CIR2wVxkvSbodtzKrzfmJOy/Q=
 github.com/navaz-alani/concord v0.0.0-20201203050336-974d78aae729/go.mod h1:mwXyWNYLOj+EiwGXtKS8ZBQMS5xHlWaAs7hLYcJlfkw=
+gopkg.in/hraban/opus.v2 v2.0.0-20201025103112-d779bb1cc5a2 h1:sxrRNhZ+cNxxLwPw/vV8gNsz+bbqRQiZHBYBJfpyNoQ=
+gopkg.in/hraban/opus.v2 v2.0.0-20201025103112-d779bb1cc5a2/go.mod h1:/L5E7a21VWl8DeuCPKxQBdVG5cy+L0MRZ08B1wnqt7g=

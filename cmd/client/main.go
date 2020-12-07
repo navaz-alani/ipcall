@@ -16,7 +16,7 @@ import (
 
 var (
 	secure        = flag.Bool("secure", true, "whether to use transport layer & end-to-end encryption")
-	sampleRate    = flag.Int("sample-rate", 5000, "audio sample rate (higher -> more throughput)")
+	sampleRate    = flag.Int("sample-rate", 8000, "audio sample rate (higher -> more throughput)")
 	laddrStr      = flag.String("l-addr", "", "listen-address of the client")
 	svrAddrStr    = flag.String("s-addr", "", "address of the server")
 	clientAddrStr = flag.String("c-addr", "", "address of the client")
