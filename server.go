@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	KeyIPCallAlias      string = "ipcall_alias"
-	KeyIPCallRelayAlias        = "ipcall_relay_alias"
+	KeyIPCallAlias          string = "ipcall_alias"
+	KeyIPCallRelayToAlias          = "ipcall_relay_to"
+	KeyIPCallRelayFromAlias        = "ipcall_relay_from"
 )
 
 type IPCall struct {
@@ -132,8 +133,8 @@ func (ip *IPCall) proxy(ctx *core.TargetCtx, pw packet.Writer) {
 	}
 	// ensure that the alias being relayed to is specified and registered with the
 	// `IPCall` server
-	var relayAddr string
-	if relayAlias := ctx.Pkt.Meta().Get(KeyIPCallRelayAlias); relayAlias == "" {
+	var relayAlias, relayAddr string
+	if relayAlias = ctx.Pkt.Meta().Get(KeyIPCallRelayToAlias); relayAlias == "" {
 		ctx.Stat = core.CodeStopError
 		ctx.Msg = "proxy error: relay alias not specified"
 		return
@@ -146,7 +147,8 @@ func (ip *IPCall) proxy(ctx *core.TargetCtx, pw packet.Writer) {
 	// `pw` to `relayAddr`
 	ctx.Stat = core.CodeRelay
 	pw.Meta().Add(server.KeyRelayTo, relayAddr)
-	pw.Meta().Add(server.KeyRelayFrom, fromAlias)
+	pw.Meta().Add(KeyIPCallRelayToAlias, relayAlias)
+	pw.Meta().Add(KeyIPCallRelayFromAlias, fromAlias)
 	pw.Write(ctx.Pkt.Data())
 	pw.Close()
 }
